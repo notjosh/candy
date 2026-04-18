@@ -18,7 +18,6 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/caddy
-  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   check-updates:
@@ -34,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check for new releases
         id: check
@@ -52,10 +51,67 @@ jobs:
           git push
 
   build:
-    name: Build and publish
-    runs-on: ubuntu-latest
+    name: Build
     needs: [check-updates]
     if: always() && (github.event_name == 'push' || needs.check-updates.outputs.has_changes == 'true')
+    runs-on: ${{ matrix.runner }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./caddy
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ matrix.platform }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+
+  merge:
+    name: Merge and publish
+    needs: [build]
+    if: always() && !cancelled() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
@@ -63,46 +119,46 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
 
       - name: Read version
         id: version
         run: |
-          VERSION=$(grep 'ARG CADDY_VERSION' caddy/Dockerfile | sed -nre 's/^[^0-9]*(([0-9]+\.)*[0-9]+).*/\1/p')
+          VERSION=$(jq -r '.["caddyserver/caddy"]' caddy/versions.json)
           echo "caddy=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate image metadata
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         id: metadata
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}},value=v${{ steps.version.outputs.caddy }}
-            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.caddy }}
-            type=semver,pattern={{major}},value=v${{ steps.version.outputs.caddy }}
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.caddy }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.caddy }}
+            type=semver,pattern={{major}},value=${{ steps.version.outputs.caddy }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ./caddy
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          platforms: ${{ env.PLATFORMS }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create manifest and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
