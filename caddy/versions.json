@@ -1,7 +1,7 @@
 {
   "caddyserver/caddy": "v2.11.4",
   "caddy-dns/digitalocean": "04bde28",
-  "greenpau/caddy-security": "v1.1.62",
-  "lucaslorentz/caddy-docker-proxy": "v2.12.1",
+  "greenpau/caddy-security": "v1.1.64",
+  "lucaslorentz/caddy-docker-proxy": "v2.13.0",
   "mholt/caddy-l4": "v0.1.1"
 }
