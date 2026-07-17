@@ -3,5 +3,5 @@
   "caddy-dns/digitalocean": "04bde28",
   "greenpau/caddy-security": "v1.1.64",
   "lucaslorentz/caddy-docker-proxy": "v2.13.1",
-  "mholt/caddy-l4": "v0.1.1"
+  "mholt/caddy-l4": "v0.1.2"
 }
